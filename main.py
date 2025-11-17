@@ -1,8 +1,14 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
+from bson import ObjectId
 
-app = FastAPI()
+from database import db, create_document, get_documents
+from schemas import Product, ContactMessage
+
+app = FastAPI(title="Bakery API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -12,17 +18,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Utilities
+class ProductOut(Product):
+    id: Optional[str] = None
+
+
+def serialize_product(doc: dict) -> ProductOut:
+    return ProductOut(
+        id=str(doc.get("_id")),
+        title=doc.get("title"),
+        description=doc.get("description"),
+        price=float(doc.get("price", 0)),
+        category=doc.get("category", ""),
+        in_stock=bool(doc.get("in_stock", True)),
+        image_url=doc.get("image_url"),
+    )
+
+
 @app.get("/")
 def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
+    return {"message": "Bakery API is running"}
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
 
 @app.get("/test")
 def test_database():
-    """Test endpoint to check if database is available and accessible"""
     response = {
         "backend": "✅ Running",
         "database": "❌ Not Available",
@@ -31,38 +51,96 @@ def test_database():
         "connection_status": "Not Connected",
         "collections": []
     }
-    
+
     try:
-        # Try to import database module
-        from database import db
-        
         if db is not None:
             response["database"] = "✅ Available"
             response["database_url"] = "✅ Configured"
             response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
             response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
             try:
                 collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
+                response["collections"] = collections[:10]
                 response["database"] = "✅ Connected & Working"
             except Exception as e:
                 response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
         else:
             response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
     except Exception as e:
         response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
+
     response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
     response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
+
     return response
+
+
+# Seed some default bakery products if empty
+@app.post("/seed")
+def seed_products():
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    count = db["product"].count_documents({})
+    if count > 0:
+        return {"inserted": 0, "message": "Products already exist"}
+
+    items = [
+        {
+            "title": "Sourdough Loaf",
+            "description": "Crusty artisan sourdough with a tender crumb.",
+            "price": 6.5,
+            "category": "Bread",
+            "in_stock": True,
+            "image_url": "https://images.unsplash.com/photo-1542838132-92c53300491e?q=80&w=1200&auto=format&fit=crop"
+        },
+        {
+            "title": "Chocolate Croissant",
+            "description": "Flaky butter croissant filled with dark chocolate.",
+            "price": 3.25,
+            "category": "Pastry",
+            "in_stock": True,
+            "image_url": "https://images.unsplash.com/photo-1547106634-56dcd53ae883?q=80&w=1200&auto=format&fit=crop"
+        },
+        {
+            "title": "Blueberry Muffin",
+            "description": "Moist muffin packed with fresh blueberries.",
+            "price": 2.95,
+            "category": "Muffin",
+            "in_stock": True,
+            "image_url": "https://images.unsplash.com/photo-1509365465985-25d11c17e812?q=80&w=1200&auto=format&fit=crop"
+        },
+        {
+            "title": "Cinnamon Roll",
+            "description": "Swirled with cinnamon, topped with vanilla glaze.",
+            "price": 3.5,
+            "category": "Pastry",
+            "in_stock": True,
+            "image_url": "https://images.unsplash.com/photo-1606313564200-e75d5e30476e?q=80&w=1200&auto=format&fit=crop"
+        }
+    ]
+
+    for item in items:
+        create_document("product", item)
+
+    return {"inserted": len(items)}
+
+
+# Public endpoints
+@app.get("/products", response_model=List[ProductOut])
+def list_products():
+    docs = get_documents("product")
+    return [serialize_product(doc) for doc in docs]
+
+
+class ContactIn(ContactMessage):
+    pass
+
+
+@app.post("/contact")
+def send_contact(message: ContactIn):
+    create_document("contactmessage", message)
+    return {"ok": True}
 
 
 if __name__ == "__main__":
